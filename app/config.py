@@ -24,6 +24,11 @@ MAX_CSV_ROWS = 100_000
 # Station ids are used in filesystem paths, so keep them conservative.
 STATION_RE = r"[A-Za-z0-9_.-]{1,32}"
 
+# Optional, demo/test-only: pause after each streamed 64 KiB chunk so a slow
+# download can be observed (and reclaimed) from the web UI. 0 in production.
+DOWNLOAD_CHUNK_DELAY = float(os.environ.get("DOWNLOAD_CHUNK_DELAY_SECONDS", "0"))
+DOWNLOAD_CHUNK_SIZE = int(os.environ.get("DOWNLOAD_CHUNK_SIZE_BYTES", "65536"))
+
 
 def all_dirs() -> tuple[Path, ...]:
     # Computed dynamically so tests can point DATA_VOLUME at a temp directory.

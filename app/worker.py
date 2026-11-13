@@ -128,10 +128,13 @@ def recover() -> dict[str, object]:
                     )
 
             # 4. Database rows pointing at files that vanished from the volume.
+            #    Reclaimed rows are skipped on purpose: their missing file is
+            #    the expected end state, and the tombstone (not parquet_path)
+            #    decides what a download says.
             for table in ("daily_versions", "monthly_generations"):
                 for row in conn.execute(
                     f"SELECT id AS rid, parquet_path FROM {table} "
-                    "WHERE parquet_path IS NOT NULL"
+                    "WHERE parquet_path IS NOT NULL AND reclaimed_at IS NULL"
                 ).fetchall():
                     if not Path(row["parquet_path"]).is_file():
                         conn.execute(
@@ -142,14 +145,19 @@ def recover() -> dict[str, object]:
 
             # 5. Parquet files on disk that no registered row owns: they can
             #    never be reached through a download entry and are deleted.
+            #    Reclaimed rows are excluded: their paths are deliberately
+            #    pending deletion in reclaim_items (which retries them), and
+            #    they might momentarily still exist on disk.
             registered = {
                 str(r[0])
                 for r in conn.execute(
                     "SELECT parquet_path FROM daily_versions "
-                    "WHERE parquet_path IS NOT NULL "
+                    "WHERE parquet_path IS NOT NULL AND reclaimed_at IS NULL "
                     "UNION ALL "
                     "SELECT parquet_path FROM monthly_generations "
-                    "WHERE parquet_path IS NOT NULL"
+                    "WHERE parquet_path IS NOT NULL AND reclaimed_at IS NULL "
+                    "UNION ALL "
+                    "SELECT path FROM reclaim_items WHERE status='pending'"
                 ).fetchall()
             }
             for base in (config.DAILY_DIR, config.MONTHLY_DIR):

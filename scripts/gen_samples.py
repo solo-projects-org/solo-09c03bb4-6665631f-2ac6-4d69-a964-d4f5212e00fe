@@ -54,6 +54,19 @@ def main() -> None:
     print(f"wrote {before_path} ({len(before)} rows)")
     print(f"wrote {after_path} ({len(after)} rows)")
 
+    # A second day, so the month has two daily files and the page can show
+    # that non-current days are reused and then reclaimed independently.
+    day2 = dt.datetime(2026, 11, 11, tzinfo=dt.timezone.utc)
+    day2_values = {
+        (int((day2.replace(hour=h)).timestamp())): pm
+        for h, pm in enumerate(
+            [6, 7, 9, 14, 21, 30, 41, 49, 55, 52, 44, 38,
+             35, 34, 37, 43, 51, 63, 70, 66, 57, 45, 33, 22])
+    }
+    day2_path = ROOT / "samples" / "before" / f"{STATION}-2026-11-11.csv"
+    write_csv(day2_path, day2_values)
+    print(f"wrote {day2_path} ({len(day2_values)} rows)")
+
 
 if __name__ == "__main__":
     main()

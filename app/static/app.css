@@ -77,3 +77,8 @@ code { background: #eff1f3; padding: 1px 5px; border-radius: 4px; font-size: 12p
 .empty { color: var(--stale); font-size: 13px; }
 footer { padding: 8px 28px 28px; color: var(--stale); font-size: 12px; }
 summary { cursor: pointer; color: #0969da; font-size: 12px; }
+h3.subhead { font-size: 14px; margin: 18px 0 8px; }
+input[type="text"] {
+  padding: 7px 10px; border: 1px solid var(--border); border-radius: 6px;
+  font-size: 13px; min-width: 180px;
+}

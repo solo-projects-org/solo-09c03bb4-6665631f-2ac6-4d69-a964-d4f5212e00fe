@@ -82,8 +82,8 @@ class Server:
         self.proc = None
         return out or ""
 
-    def client(self) -> httpx.Client:
-        return httpx.Client(base_url=self.base_url, timeout=10)
+    def client(self, timeout: float = 10) -> httpx.Client:
+        return httpx.Client(base_url=self.base_url, timeout=timeout)
 
 
 @pytest.fixture()
@@ -100,3 +100,21 @@ def server(volume: Path):
     yield srv
     if srv.proc is not None:
         srv.stop()
+
+
+@pytest.fixture()
+def make_server(volume: Path):
+    """Factory for a server with extra environment (chunk size, delays…)."""
+    servers: list[Server] = []
+
+    def factory(env_extra: dict[str, str] | None = None) -> Server:
+        srv = Server(volume, free_port(), env_extra)
+        srv.start()
+        servers.append(srv)
+        return srv
+
+    yield factory
+    for srv in servers:
+        if srv.proc is not None:
+            srv.stop()
+

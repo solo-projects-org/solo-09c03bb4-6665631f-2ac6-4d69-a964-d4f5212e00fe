@@ -62,3 +62,26 @@ def redirect_message(response: httpx.Response) -> str:
         if pair.startswith(("err=", "msg=")):
             return unquote(pair.split("=", 1)[1])
     return ""
+
+
+def hours_csv(station: str, day: str, hours: int = 24,
+              pm: int = 10) -> bytes:
+    return make_csv(station, day, {h: pm for h in range(hours)})
+
+
+def dense_csv(station: str, day: str, rows: int = 12, seed: int = 0) -> bytes:
+    """Several rows with incompressible values.
+
+    Used to make a Parquet file span several stream chunks. Keep the row
+    count tiny: DuckDB's executemany insert is slow (~0.6 ms/row), so 86400
+    rows would take a minute per build.
+    """
+    import random
+
+    rnd = random.Random(seed)
+    start = day_start(day)
+    buf = io.StringIO()
+    buf.write("station,utc_seconds,pm25\n")
+    for i in range(rows):
+        buf.write(f"{station},{start + i},{rnd.randint(0, 999)}\n")
+    return buf.getvalue().encode("utf-8")

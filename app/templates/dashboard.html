@@ -26,6 +26,133 @@
 </section>
 
 <section class="card">
+  <h2>回收旧文件（按站月清理，腾出数据卷空间）</h2>
+  <form action="/reclaim" method="get" class="upload-form">
+    <input type="text" name="station" placeholder="站号，如 ST001" required
+           value="{{ reclaim_station }}">
+    <input type="text" name="month" placeholder="站月，如 2026-11" required
+           value="{{ reclaim_month }}">
+    <button type="submit">预览可回收文件</button>
+  </form>
+  <p class="hint">
+    只处理本服务登记的 CSV 与日/月 Parquet。始终保留：当前日档、该站月<b>最后成功发布</b>的月文件及其依赖日档、
+    排队/运行/待重试作业所需的输入；其余旧版本可回收。已开始的下载会完整结束，删除则延后到该下载结束；
+    回收生效后旧链接即使删盘失败也不再开放。不上传、补算和下载期间均可回收。
+  </p>
+
+  {% if reclaim_plan %}
+  {% set plan = reclaim_plan %}
+  <h3 class="subhead">{{ plan.station }} · {{ plan.month }} —— 回收预览</h3>
+  <p class="muted">
+    将回收 {{ plan.daily_candidates|length }} 个旧日档、
+    {{ plan.monthly_candidates|length }} 个旧月档，
+    可释放约 {{ '%.1f'|format(plan.bytes / 1048576) }} MiB；
+    保留 {{ plan.daily_kept|length }} 个日档、{{ plan.monthly_kept|length }} 个月档。
+  </p>
+
+  {% if plan.daily_candidates or plan.monthly_candidates %}
+  <form method="post" action="/reclaim" class="inline">
+    <input type="hidden" name="station" value="{{ plan.station }}">
+    <input type="hidden" name="month" value="{{ plan.month }}">
+    <button class="btn warn" type="submit"
+            onclick="return confirm('确认回收 {{ plan.station }} {{ plan.month }} 的旧文件？回收后旧链接不可再下载，且不可恢复。');">
+      确认回收这些旧文件
+    </button>
+  </form>
+  {% else %}
+  <p class="empty">该站月没有可回收的旧文件。</p>
+  {% endif %}
+
+  {% if plan.daily_candidates or plan.monthly_candidates %}
+  <table class="inner">
+    <thead><tr><th>文件</th><th>对象</th><th>原因</th><th>状态</th></tr></thead>
+    <tbody>
+      {% for d in plan.daily_candidates %}
+      <tr>
+        <td>日 Parquet</td><td>{{ plan.station }} {{ d.day }} v{{ d.id }}</td>
+        <td class="reason">{{ d.why }}</td><td><span class="badge bad">将回收</span></td>
+      </tr>
+      {% endfor %}
+      {% for m in plan.monthly_candidates %}
+      <tr>
+        <td>月 Parquet</td><td>{{ plan.station }} {{ plan.month }} gen{{ m.id }}</td>
+        <td class="reason">{{ m.why }}</td><td><span class="badge bad">将回收</span></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  {% if plan.daily_kept or plan.monthly_kept %}
+  <details open>
+    <summary>受保护、不会回收的文件及原因（{{ plan.daily_kept|length + plan.monthly_kept|length }}）</summary>
+    <table class="inner">
+      <thead><tr><th>文件</th><th>对象</th><th>原因</th></tr></thead>
+      <tbody>
+        {% for d in plan.daily_kept %}
+        <tr>
+          <td>日档</td><td>{{ plan.station }} {{ d.day }} v{{ d.id }}</td>
+          <td class="reason"><span class="badge ok">保留</span> {{ d.why }}</td>
+        </tr>
+        {% endfor %}
+        {% for m in plan.monthly_kept %}
+        <tr>
+          <td>月档</td><td>{{ plan.station }} {{ plan.month }} gen{{ m.id }}</td>
+          <td class="reason"><span class="badge ok">保留</span> {{ m.why }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </details>
+  {% endif %}
+  {% endif %}
+
+  <h3 class="subhead">已删除 / 待清理文件（全部站月）</h3>
+  <p class="muted">
+    已删除 {{ data.reclaim_deleted_count }} 个文件，待清理
+    {{ data.reclaim_pending_count }} 个（下载占用、删除失败或进程中断的记录会持续重试，重启后继续）。
+    {% if data.reclaim_items_truncated %}列表仅展示最近 300 条回收记录。{% endif %}
+  </p>
+  {% if not data.reclaim_items %}
+    <p class="empty">尚未回收过文件。</p>
+  {% else %}
+  <table class="inner">
+    <thead><tr><th>状态</th><th>站月</th><th>文件</th><th>对象</th><th>原因</th><th>处理时间 / 错误</th></tr></thead>
+    <tbody>
+    {% for i in data.reclaim_items %}
+      <tr>
+        <td>
+          {% if i.status == 'deleted' %}
+            <span class="badge stale">已删除</span>
+          {% else %}
+            <span class="badge busy">待清理</span>
+          {% endif %}
+        </td>
+        <td>{{ i.station }} {{ i.month }}</td>
+        <td>{{ i.kind_badge[0] }}</td>
+        <td class="muted">
+          {% if i.kind == 'monthly_parquet' %}gen{{ i.row_id }}
+          {% elif i.kind == 'daily_parquet' %}v{{ i.row_id }}{% if i.day %} ({{ i.day }}){% endif %}
+          {% elif i.kind == 'csv' %}v{{ i.row_id }}{% if i.day %} ({{ i.day }}){% endif %}
+          {% endif %}
+        </td>
+        <td class="reason">{{ i.reason }}</td>
+        <td class="reason">
+          {% if i.status == 'deleted' %}
+            <span class="muted">{{ i.deleted_at }}</span>
+          {% else %}
+            <span class="muted">等待后台重试{% if i.error %}；上次错误：{% endif %}</span>
+            {% if i.error %}<span class="errtext">{{ i.error }}</span>{% endif %}
+          {% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>
+
+<section class="card">
   <h2>站月文件（供数仓取数）</h2>
   {% if not data.months %}
     <p class="empty">尚无数据，先上传一份日档 CSV。</p>
@@ -61,11 +188,15 @@
           {% endif %}
         </td>
         <td class="actions">
+          {% if m.reclaimed_versions %}
+            <div class="muted">已回收 {{ m.reclaimed_versions }} 个旧月档</div>
+          {% endif %}
           {% if m.download_ready %}
             <a class="btn" href="/download/monthly/{{ m.station }}/{{ m.month }}">下载最新月文件</a>
           {% else %}
             <button class="btn disabled" disabled>暂无可用文件</button>
           {% endif %}
+          <a class="btn small" href="/reclaim?station={{ m.station }}&amp;month={{ m.month }}">回收旧文件</a>
           {% if m.job and m.job.status == 'failed' %}
             <form method="post" action="/jobs/{{ m.job.id }}/retry" class="inline">
               <button class="btn warn" type="submit">重试</button>
@@ -89,7 +220,10 @@
                   <td class="muted">{{ h.published_at or '—' }}</td>
                   <td class="reason">{% if h.error %}<span class="errtext">{{ h.error }}</span>{% else %}—{% endif %}</td>
                   <td>
-                    {% if h.downloadable %}
+                    {% if h.reclaimed_at %}
+                      <span class="badge stale">已回收</span>
+                      <div class="muted">{{ h.reclaim_reason }}</div>
+                    {% elif h.downloadable %}
                       <a class="btn small" href="/download/generation/{{ h.id }}">下载</a>
                     {% else %}
                       <span class="muted">不可下载</span>

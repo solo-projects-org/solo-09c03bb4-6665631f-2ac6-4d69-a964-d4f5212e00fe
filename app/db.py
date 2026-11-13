@@ -1,11 +1,17 @@
 """SQLite persistence for dependencies and progress.
 
-Four tables:
+Five tables:
 
 * ``daily_versions``  - one row per uploaded station-day (full-replacement).
 * ``monthly_generations`` - one row per station-month Parquet build attempt.
 * ``monthly_dependencies`` - which daily version ids went into a monthly file.
 * ``jobs`` - durable work queue; everything the worker does survives restarts.
+* ``reclaim_items`` - two-phase deletion records for reclaimed old files.
+
+The ``reclaimed_at`` / ``reclaim_reason`` columns on the two file tables are
+*logical* tombstones: once set they are never cleared, so a reclaimed link can
+never become downloadable again even if the physical ``unlink`` had to be
+retried (or failed permanently).
 
 WAL + a single writer (the worker thread / request handlers only enqueue)
 keeps this safe inside the one and only service instance.
@@ -82,7 +88,46 @@ CREATE TABLE IF NOT EXISTS jobs (
     updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_pick ON jobs(status, id);
+
+-- One row per file selected for reclamation. The row is committed (together
+-- with the logical tombstone on the owning version) *before* the physical
+-- unlink is attempted, so an interrupted or failing delete is always retried
+-- after a restart instead of leaking an untracked file.
+CREATE TABLE IF NOT EXISTS reclaim_items (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    station     TEXT NOT NULL,
+    month       TEXT NOT NULL,
+    kind        TEXT NOT NULL CHECK (kind IN
+                    ('csv','daily_parquet','monthly_parquet')),
+    table_name  TEXT NOT NULL CHECK (table_name IN
+                    ('daily_versions','monthly_generations')),
+    row_id      INTEGER NOT NULL,
+    day         TEXT,
+    path        TEXT NOT NULL,
+    size_bytes  INTEGER,
+    status      TEXT NOT NULL CHECK (status IN ('pending','deleted')),
+    reason      TEXT,
+    error       TEXT,
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    deleted_at  TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_reclaim_once
+    ON reclaim_items(table_name, row_id, kind);
+CREATE INDEX IF NOT EXISTS idx_reclaim_status ON reclaim_items(status, id);
 """
+
+# Columns added after the first deployment: applied in place on existing
+# volumes so an upgrade never requires a manual migration.
+MIGRATIONS = {
+    "daily_versions": (
+        ("reclaimed_at", "TEXT"),
+        ("reclaim_reason", "TEXT"),
+    ),
+    "monthly_generations": (
+        ("reclaimed_at", "TEXT"),
+        ("reclaim_reason", "TEXT"),
+    ),
+}
 
 
 def get_conn() -> sqlite3.Connection:
@@ -101,6 +146,18 @@ def get_conn() -> sqlite3.Connection:
 def init_db() -> None:
     with get_conn() as conn:
         conn.executescript(SCHEMA)
+        _migrate(conn)
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Add columns introduced after the initial deployment (idempotent)."""
+    for table, columns in MIGRATIONS.items():
+        existing = {
+            row["name"] for row in conn.execute(f"PRAGMA table_info({table})")
+        }
+        for name, decl in columns:
+            if name not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
 
 
 @contextmanager
