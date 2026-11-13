@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>空气站站月文件服务</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <meta http-equiv="refresh" content="10">
+</head>
+<body>
+<header>
+  <h1>空气站站月文件服务</h1>
+  <p class="sub">单站单 UTC 日 CSV 上传 · DuckDB→Parquet · 日档更正自动补算月文件（页面每 10 秒自动刷新）</p>
+</header>
+
+{% if msg %}<div class="flash ok">{{ msg }}</div>{% endif %}
+{% if err %}<div class="flash bad">{{ err }}</div>{% endif %}
+
+<section class="card">
+  <h2>上传更正日档（同站同日整份替换）</h2>
+  <form action="/upload" method="post" enctype="multipart/form-data" class="upload-form">
+    <input type="file" name="file" accept=".csv,text/csv" required>
+    <button type="submit">上传并触发补算</button>
+  </form>
+  <p class="hint">CSV 表头必须为 <code>station,utc_seconds,pm25</code>；UTC 秒与 PM2.5 均为非负整数，时间戳须落在同一个 UTC 日。校验失败或保存失败时原日档保持不变。</p>
+</section>
+
+<section class="card">
+  <h2>站月文件（供数仓取数）</h2>
+  {% if not data.months %}
+    <p class="empty">尚无数据，先上传一份日档 CSV。</p>
+  {% else %}
+  <table>
+    <thead>
+      <tr><th>站号</th><th>月份</th><th>状态</th><th>当前日档数</th><th>行数</th><th>最新月文件</th><th>失败原因 / 作业</th><th>操作</th></tr>
+    </thead>
+    <tbody>
+    {% for m in data.months %}
+      <tr>
+        <td>{{ m.station }}</td>
+        <td>{{ m.month }}</td>
+        <td><span class="badge {{ m.badge[1] }}">{{ m.badge[0] }}</span></td>
+        <td>{{ m.day_count }}</td>
+        <td>{{ m.row_count if m.row_count is not none else '—' }}</td>
+        <td>
+          {% if m.download_ready %}
+            <span class="muted">gen{{ m.download_id }}</span>
+          {% else %}
+            <span class="muted">未发布</span>
+          {% endif %}
+        </td>
+        <td class="reason">
+          {% if m.error %}<div class="errtext">{{ m.error }}</div>{% endif %}
+          {% if m.job %}
+            <div class="muted">作业 #{{ m.job.id }}：
+              {% if m.job.status == 'pending' %}排队中（尝试 {{ m.job.attempts }} 次）
+              {% elif m.job.status == 'running' %}补算中…
+              {% elif m.job.status == 'failed' %}失败（尝试 {{ m.job.attempts }} 次）
+              {% endif %}
+            </div>
+          {% endif %}
+        </td>
+        <td class="actions">
+          {% if m.download_ready %}
+            <a class="btn" href="/download/monthly/{{ m.station }}/{{ m.month }}">下载最新月文件</a>
+          {% else %}
+            <button class="btn disabled" disabled>暂无可用文件</button>
+          {% endif %}
+          {% if m.job and m.job.status == 'failed' %}
+            <form method="post" action="/jobs/{{ m.job.id }}/retry" class="inline">
+              <button class="btn warn" type="submit">重试</button>
+            </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% if m.history %}
+      <tr class="history-row">
+        <td colspan="8">
+          <details>
+            <summary>历史版本（{{ m.history|length }}）— 过期月文件仍可下载</summary>
+            <table class="inner">
+              <thead><tr><th>版本</th><th>状态</th><th>创建</th><th>发布</th><th>失败原因</th><th>操作</th></tr></thead>
+              <tbody>
+              {% for h in m.history %}
+                <tr>
+                  <td>gen{{ h.id }}</td>
+                  <td><span class="badge {{ h.badge[1] }}">{{ h.badge[0] }}</span></td>
+                  <td class="muted">{{ h.created_at }}</td>
+                  <td class="muted">{{ h.published_at or '—' }}</td>
+                  <td class="reason">{% if h.error %}<span class="errtext">{{ h.error }}</span>{% else %}—{% endif %}</td>
+                  <td>
+                    {% if h.downloadable %}
+                      <a class="btn small" href="/download/generation/{{ h.id }}">下载</a>
+                    {% else %}
+                      <span class="muted">不可下载</span>
+                    {% endif %}
+                  </td>
+                </tr>
+              {% endfor %}
+              </tbody>
+            </table>
+          </details>
+        </td>
+      </tr>
+      {% endif %}
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>日档（UTC 日）</h2>
+  {% if not data.days %}
+    <p class="empty">尚无日档。</p>
+  {% else %}
+  <table>
+    <thead>
+      <tr><th>站号</th><th>UTC 日</th><th>版本数</th><th>当前版本</th><th>状态</th><th>行数</th><th>失败原因</th><th>操作</th></tr>
+    </thead>
+    <tbody>
+    {% for d in data.days %}
+      <tr>
+        <td>{{ d.station }}</td>
+        <td>{{ d.day }}</td>
+        <td>{{ d.version_count }}</td>
+        <td>{% if d.current_id %}v{{ d.current_id }}{% else %}—{% endif %}</td>
+        <td><span class="badge {{ d.badge[1] }}">{{ d.badge[0] }}</span></td>
+        <td>{{ d.row_count if d.row_count is not none else '—' }}</td>
+        <td class="reason">{% if d.error %}<span class="errtext">{{ d.error }}</span>{% endif %}</td>
+        <td class="actions">
+          {% if d.download_ready %}
+            <a class="btn small" href="/download/daily/{{ d.station }}/{{ d.day }}">下载当前日 Parquet</a>
+          {% else %}
+            <button class="btn disabled small" disabled>不可下载</button>
+          {% endif %}
+          {% if d.job and d.job.status == 'failed' %}
+            <form method="post" action="/jobs/{{ d.job.id }}/retry" class="inline">
+              <button class="btn warn small" type="submit">重试</button>
+            </form>
+          {% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>最近作业（依赖与进度，SQLite 持久化）</h2>
+  <table>
+    <thead><tr><th>#</th><th>类型</th><th>对象</th><th>状态</th><th>尝试</th><th>更新时间</th><th>失败原因</th><th></th></tr></thead>
+    <tbody>
+    {% for j in data.jobs %}
+      <tr>
+        <td>{{ j.id }}</td>
+        <td>{{ '日转写' if j.kind == 'daily_build' else '月合并' }}</td>
+        <td>#{{ j.ref_id }}</td>
+        <td>
+          {% set jb = data.job_badges[j.status] %}
+          <span class="badge {{ jb[1] }}">{{ jb[0] }}</span>
+        </td>
+        <td>{{ j.attempts }}</td>
+        <td class="muted">{{ j.updated_at }}</td>
+        <td class="reason">{% if j.error %}<span class="errtext">{{ j.error }}</span>{% endif %}</td>
+        <td>
+          {% if j.status == 'failed' %}
+          <form method="post" action="/jobs/{{ j.id }}/retry" class="inline">
+            <button class="btn warn small" type="submit">重试</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<footer>单实例服务 · 全部文件与 SQLite 数据库位于数据卷 <code>/data</code> · 下载入口仅指向已登记且存在的完整文件</footer>
+</body>
+</html>

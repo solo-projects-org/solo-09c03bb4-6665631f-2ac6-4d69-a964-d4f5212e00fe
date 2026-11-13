@@ -1,0 +1,6 @@
+# Local runtime data (in containers this lives in the station-data volume)
+/data/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
